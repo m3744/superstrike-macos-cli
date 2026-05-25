@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Superstrike Control
+GenericName=Mouse Configuration
+Comment=Configure the Logitech PRO X 2 Superstrike (DPI, polling rate, haptics, profiles)
+Exec=superstrike
+Icon=superstrike
+Terminal=false
+Categories=Utility;Settings;HardwareSettings;
+Keywords=mouse;logitech;dpi;polling;haptics;superstrike;

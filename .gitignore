@@ -1,0 +1,8 @@
+# compiled binary (shipped via GitHub Releases, not committed)
+superstrike
+!superstrike.svg
+!superstrike.desktop
+
+# editor / OS cruft
+*.swp
+.DS_Store
