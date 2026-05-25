@@ -52,7 +52,8 @@ type App struct {
 	dev  *hidpp.Device
 	name string
 
-	suppress bool // guards programmatic Select changes from firing handlers
+	suppress   bool // guards programmatic Select changes from firing handlers
+	permDenied bool // a Logitech node was found but couldn't be opened (udev)
 
 	status *widget.Label
 	tabs   *container.AppTabs
@@ -134,6 +135,7 @@ func (a *App) tick() {
 		a.connectLocked()
 	}
 	dev := a.dev
+	permDenied := a.permDenied
 	var (
 		name     string
 		batt     hidpp.Battery
@@ -154,8 +156,13 @@ func (a *App) tick() {
 	fyne.Do(func() {
 		if dev == nil {
 			a.setConnected(false)
-			a.status.SetText("no mouse detected — is it powered on and paired?")
-			a.dName.SetText("Disconnected")
+			if permDenied {
+				a.status.SetText("mouse found but no permission — install the udev rule (see README), then replug")
+				a.dName.SetText("Permission denied")
+			} else {
+				a.status.SetText("no mouse detected — is it powered on and paired?")
+				a.dName.SetText("Disconnected")
+			}
 			a.batt.set(0, false, false)
 			a.dBattPct.SetText("—")
 			a.dBatt.SetText("—")
@@ -208,10 +215,12 @@ func setText(t *canvas.Text, s string) {
 // connectLocked discovers the mouse, selects it, and forces Onboard mode.
 // Caller must hold opMu.
 func (a *App) connectLocked() {
-	devs, _, _ := hidpp.Discover()
+	devs, permDenied, _ := hidpp.Discover()
+	a.permDenied = permDenied
 	if len(devs) == 0 {
 		return
 	}
+	a.permDenied = false // we opened at least one device
 	// Score candidates so we pick the actual mouse regardless of how it's
 	// connected (wireless dongle / wired / Bluetooth — each enumerates with a
 	// different name/PID/hidraw node). Prefer the Superstrike by name, prefer

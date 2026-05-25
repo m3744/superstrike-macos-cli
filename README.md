@@ -45,13 +45,21 @@ your settings apply instantly **and persist on the mouse itself**.
    ```
 2. **Grant access to the mouse** (one-time udev rule, so it runs without sudo):
    ```sh
-   sudo tee /etc/udev/rules.d/99-logitech-superstrike.rules >/dev/null <<'EOF'
+   sudo tee /etc/udev/rules.d/70-logitech-superstrike.rules >/dev/null <<'EOF'
    KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", MODE="0660", TAG+="uaccess"
    SUBSYSTEM=="usb", ATTRS{idVendor}=="046d", MODE="0660", TAG+="uaccess"
    EOF
    sudo udevadm control --reload-rules && sudo udevadm trigger
    ```
-   Then replug the receiver (or reboot).
+   Then replug the mouse (or reboot).
+
+   > ⚠️ **The filename number matters.** The rule must be numbered **below 73**
+   > (we use `70-`). systemd's `73-seat-late.rules` is what turns the `uaccess`
+   > tag into a per-user ACL, and udev applies rules in lexical order — a `99-`
+   > rule sets the tag *too late*, so the device stays root-only. The usual
+   > symptom is "it worked, then after a reboot the app says no mouse / permission
+   > denied." If you installed an older `99-…` rule, delete it:
+   > `sudo rm /etc/udev/rules.d/99-logitech-superstrike.rules`
 3. Run it:
    ```sh
    ./superstrike

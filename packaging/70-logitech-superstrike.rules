@@ -1,0 +1,19 @@
+# Grant the logged-in user read/write access to Logitech HID++ devices so the
+# Superstrike control panel can run without root.
+#
+# IMPORTANT: this file MUST be numbered below 73 (we use 70). systemd's
+# 73-seat-late.rules is what turns the "uaccess" tag into a per-user ACL, and
+# udev applies rules in lexical order. A uaccess tag added by a 99-* rule is set
+# *after* 73 already ran, so it never becomes an ACL and the device stays
+# root-only (the classic "works until reboot, then no device" bug).
+#
+# Install:
+#   sudo cp packaging/70-logitech-superstrike.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+# then replug the device (or reboot). To grant access to an already-attached
+# device without replugging, the trigger above is enough.
+
+# All Logitech (046d) USB devices, including the LIGHTSPEED receiver and the
+# directly-attached (wired) mouse.
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="046d", MODE="0660", TAG+="uaccess"
