@@ -1,21 +1,20 @@
 // Package hidpp implements just enough of the Logitech HID++ 2.0 protocol,
-// spoken directly over a Linux /dev/hidraw node, to drive the PRO X 2
-// Superstrike (and most modern Logitech mice) without any external C library.
+// spoken over a hidapi HID device, to drive the PRO X 2 Superstrike (and most
+// modern Logitech mice) on macOS without any external daemon or GUI.
 //
 // HID++ is a request/response protocol carried inside HID reports. A request
 // names a *feature index* and a *function* within that feature; the device
 // replies with a report echoing the same indices plus our software id so we
-// can correlate it against asynchronous notifications on the same node.
+// can correlate it against asynchronous notifications on the same channel.
 package hidpp
 
 import (
 	"errors"
 	"fmt"
-	"os"
 	"sync"
 	"time"
 
-	"golang.org/x/sys/unix"
+	hid "github.com/sstallion/go-hid"
 )
 
 // Report type IDs and their on-the-wire lengths (including the leading report
@@ -51,7 +50,7 @@ type HIDPPError struct {
 	FeatureIndex byte
 	Function     byte
 	Code         byte
-	Raw          []byte // full error report, for diagnostics
+	Raw          []byte
 }
 
 func (e *HIDPPError) Error() string {
@@ -87,34 +86,32 @@ func errName(code byte) string {
 }
 
 // Device is an open HID++ channel to one physical mouse, reachable at a given
-// device index (0xFF for a directly-attached / dj child node, 1..6 for a slot
-// on a receiver). All calls are serialised by mu so request/response pairs on
-// the shared hidraw fd never interleave.
+// device index (0x01 for a LIGHTSPEED-paired mouse, 0xFF for direct USB/BT).
+// All calls are serialised by mu so request/response pairs never interleave.
 type Device struct {
-	mu       sync.Mutex
-	f        *os.File
-	Path     string // /dev/hidrawN
-	Index    byte   // HID++ device index
-	Name     string // HID name from sysfs, if known
-	Timeout  time.Duration
+	mu      sync.Mutex
+	dev     *hid.Device
+	Path    string
+	Index   byte
+	Name    string // HID product string from enumeration
+	Timeout time.Duration
 }
 
-// Open opens a hidraw node for HID++ traffic. The caller is responsible for
-// having read/write permission (see the shipped udev rule).
+// Open opens a HID device by its IOKit path for HID++ traffic.
 func Open(path string, index byte) (*Device, error) {
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	dev, err := hid.OpenPath(path)
 	if err != nil {
 		return nil, err
 	}
 	// 4s matches Solaar's DEFAULT_TIMEOUT; some setters reply slowly.
-	return &Device{f: f, Path: path, Index: index, Timeout: 4 * time.Second}, nil
+	return &Device{dev: dev, Path: path, Index: index, Timeout: 4 * time.Second}, nil
 }
 
 func (d *Device) Close() error {
-	if d.f == nil {
+	if d.dev == nil {
 		return nil
 	}
-	return d.f.Close()
+	return d.dev.Close()
 }
 
 // Call issues featureIndex.function(params...) and returns the parameter bytes
@@ -132,12 +129,12 @@ func (d *Device) Call(featureIndex, function byte, params ...byte) ([]byte, erro
 	req[3] = (function << 4) | softwareID
 	copy(req[4:], params)
 
-	// Drain any reports left in the kernel buffer from earlier traffic
+	// Drain any reports left in the buffer from earlier traffic
 	// (notifications, late acks) so we don't mis-correlate a stale report to
 	// this request.
 	d.drain()
 
-	if _, err := d.f.Write(req); err != nil {
+	if _, err := d.dev.Write(req); err != nil {
 		return nil, fmt.Errorf("hidpp: write: %w", err)
 	}
 
@@ -176,46 +173,28 @@ func (d *Device) Call(featureIndex, function byte, params ...byte) ([]byte, erro
 
 // drain consumes any immediately-available reports without blocking.
 func (d *Device) drain() {
+	buf := make([]byte, veryLongLen)
 	for {
-		fds := []unix.PollFd{{Fd: int32(d.f.Fd()), Events: unix.POLLIN}}
-		n, err := unix.Poll(fds, 0)
+		n, err := d.dev.ReadWithTimeout(buf, 0)
 		if err != nil || n == 0 {
 			return
 		}
-		buf := make([]byte, veryLongLen)
-		if _, err := d.f.Read(buf); err != nil {
-			return
-		}
 	}
 }
 
-// read blocks (with poll) for the next inbound report until deadline.
+// read blocks for the next inbound report until deadline.
 func (d *Device) read(deadline time.Time) ([]byte, error) {
-	for {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return nil, ErrTimeout
-		}
-		fds := []unix.PollFd{{Fd: int32(d.f.Fd()), Events: unix.POLLIN}}
-		n, err := unix.Poll(fds, int(remaining.Milliseconds()))
-		if err != nil {
-			if err == unix.EINTR {
-				continue
-			}
-			return nil, fmt.Errorf("hidpp: poll: %w", err)
-		}
-		if n == 0 {
-			return nil, ErrTimeout
-		}
-		buf := make([]byte, veryLongLen)
-		nr, err := d.f.Read(buf)
-		if err != nil {
-			return nil, fmt.Errorf("hidpp: read: %w", err)
-		}
-		if nr == 0 {
-			continue
-		}
-		return buf[:nr], nil
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return nil, ErrTimeout
 	}
+	buf := make([]byte, veryLongLen)
+	nr, err := d.dev.ReadWithTimeout(buf, remaining)
+	if err != nil {
+		return nil, fmt.Errorf("hidpp: read: %w", err)
+	}
+	if nr == 0 {
+		return nil, ErrTimeout
+	}
+	return buf[:nr], nil
 }
-

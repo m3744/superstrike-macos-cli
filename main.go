@@ -1,32 +1,21 @@
-// Command superstrike is a self-contained Linux control panel for the Logitech
-// PRO X 2 Superstrike. It speaks HID++ 2.0 directly over /dev/hidraw and renders
-// a Fyne GUI — no G HUB, no background daemon, one binary.
-//
-// Without flags it launches the GUI. A few headless flags are provided for
-// diagnostics / support (see -h).
+// Command superstrike is a macOS CLI for the Logitech PRO X 2 Superstrike.
+// It speaks HID++ 2.0 directly over IOKit — no G HUB, no daemon, one binary.
 package main
 
 import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
-	"sort"
 	"strings"
-	"time"
-
-	"golang.org/x/sys/unix"
 
 	"superstrike/internal/hidpp"
-	"superstrike/internal/ui"
 )
 
 func main() {
-	probe := flag.Bool("probe", false, "headless: print device info + HID++ feature table")
-	profile := flag.Bool("profile", false, "headless: dump the active onboard profile (read-only)")
-	profiles := flag.Bool("profiles", false, "headless: list all profiles + control sectors (read-only)")
-	measurerate := flag.Bool("measurerate", false, "measure the ACTUAL report rate from kernel input events (move the mouse)")
-	scan := flag.Bool("scan", false, "headless: list Logitech hidraw nodes + HID++ ping results")
+	probe    := flag.Bool("probe", false, "print device info + full HID++ feature table")
+	profile  := flag.Bool("profile", false, "dump the active onboard profile (read-only)")
+	profiles := flag.Bool("profiles", false, "list all profiles + control sectors (read-only)")
+	scan     := flag.Bool("scan", false, "list all Logitech HID interfaces + HID++ ping results")
 	flag.Parse()
 
 	switch {
@@ -36,26 +25,26 @@ func main() {
 		runProfile()
 	case *profiles:
 		runProfiles()
-	case *measurerate:
-		runMeasureRate()
 	case *scan:
 		runScan()
 	default:
-		ui.Run()
+		flag.Usage()
 	}
 }
 
 func openMouse() *hidpp.Device {
 	devs, _, err := hidpp.Discover()
 	if err != nil || len(devs) == 0 {
-		fmt.Fprintln(os.Stderr, "no device:", err)
+		fmt.Fprintln(os.Stderr, "no device found:", err)
+		fmt.Fprintln(os.Stderr, "tip: grant Input Monitoring permission in System Settings → Privacy & Security")
 		os.Exit(1)
 	}
 	return pickDevice(devs)
 }
 
-// pickDevice selects the configurable Superstrike among discovered Logitech
-// devices, preferring the matching name and avoiding the bare receiver.
+// pickDevice selects the best candidate among discovered devices,
+// preferring the Superstrike by name and preferring devices that have an
+// onboard profile (which the bare receiver does not).
 func pickDevice(devs []*hidpp.Device) *hidpp.Device {
 	pick := devs[0]
 	best := -1 << 30
@@ -87,16 +76,16 @@ func runProbe() {
 	}
 	if len(devs) == 0 {
 		if perm {
-			fmt.Fprintln(os.Stderr, "permission denied on /dev/hidraw* — run with sudo or install the udev rule")
+			fmt.Fprintln(os.Stderr, "permission denied — grant Input Monitoring in System Settings → Privacy & Security")
 		} else {
-			fmt.Fprintln(os.Stderr, "no HID++ Logitech device responded — is the mouse powered on?")
+			fmt.Fprintln(os.Stderr, "no HID++ Logitech device responded — is the mouse powered on and the receiver plugged in?")
 		}
 		os.Exit(1)
 	}
 	for _, d := range devs {
 		ver, _ := d.Ping()
 		name, _ := d.DeviceName()
-		fmt.Printf("\n=== %s (idx 0x%02X)  HID name: %q  HID++ %s ===\n", d.Path, d.Index, d.Name, ver)
+		fmt.Printf("\n=== %s (idx 0x%02X)  product: %q  HID++ %s ===\n", d.Path, d.Index, d.Name, ver)
 		if name != "" {
 			fmt.Printf("  marketing name : %s\n", name)
 		}
@@ -163,133 +152,22 @@ func runProfiles() {
 	}
 }
 
-// findSuperstrikeEvent locates the mouse's /dev/input/eventN node via
-// /proc/bus/input/devices, preferring the pointer ("Mouse") handler.
-func findSuperstrikeEvent() string {
-	data, err := os.ReadFile("/proc/bus/input/devices")
-	if err != nil {
-		return ""
-	}
-	best := ""
-	for _, block := range strings.Split(string(data), "\n\n") {
-		if !strings.Contains(strings.ToUpper(block), "SUPERSTRIKE") {
-			continue
-		}
-		ev := ""
-		for _, line := range strings.Split(block, "\n") {
-			if strings.HasPrefix(line, "H: Handlers=") {
-				for _, h := range strings.Fields(strings.TrimPrefix(line, "H: Handlers=")) {
-					if strings.HasPrefix(h, "event") {
-						ev = "/dev/input/" + h
-					}
-				}
-			}
-		}
-		if ev == "" {
-			continue
-		}
-		if strings.Contains(strings.ToUpper(block), "MOUSE") {
-			return ev
-		}
-		if best == "" {
-			best = ev
-		}
-	}
-	return best
-}
-
-// runMeasureRate counts SYN_REPORT events while the user moves the mouse,
-// giving the true report rate independent of any HID++ register.
-func runMeasureRate() {
-	ev := findSuperstrikeEvent()
-	if ev == "" {
-		fmt.Fprintln(os.Stderr, "could not find the Superstrike event device")
-		os.Exit(1)
-	}
-	f, err := os.Open(ev)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "open %s: %v (try with sudo)\n", ev, err)
-		os.Exit(1)
-	}
-	defer f.Close()
-
-	const evSize = 24 // struct input_event on amd64
-	fmt.Printf("measuring %s — MOVE THE MOUSE CONTINUOUSLY for 4 seconds...\n", ev)
-	buf := make([]byte, evSize*128)
-	syn := 0
-	deadline := time.Now().Add(4 * time.Second)
-	start := time.Now()
-	for time.Now().Before(deadline) {
-		remain := time.Until(deadline)
-		fds := []unix.PollFd{{Fd: int32(f.Fd()), Events: unix.POLLIN}}
-		n, perr := unix.Poll(fds, int(remain.Milliseconds()))
-		if perr == unix.EINTR {
-			continue
-		}
-		if n <= 0 {
-			break
-		}
-		nr, rerr := f.Read(buf)
-		if rerr != nil {
-			break
-		}
-		for off := 0; off+evSize <= nr; off += evSize {
-			typ := uint16(buf[off+16]) | uint16(buf[off+17])<<8
-			code := uint16(buf[off+18]) | uint16(buf[off+19])<<8
-			if typ == 0x00 && code == 0x00 { // EV_SYN / SYN_REPORT
-				syn++
-			}
-		}
-	}
-	elapsed := time.Since(start).Seconds()
-	if syn == 0 {
-		fmt.Println("no events seen — did you move the mouse? (also try sudo)")
+// runScan lists every Logitech HID interface on the system and whether it
+// answers an HID++ ping — useful for diagnosing connection and permission issues.
+func runScan() {
+	fmt.Println("Logitech (046d) HID interfaces:")
+	results := hidpp.Scan()
+	if len(results) == 0 {
+		fmt.Println("  none found — is the receiver plugged in?")
 		return
 	}
-	fmt.Printf("counted %d reports in %.2fs  ≈  %.0f Hz (actual report rate)\n", syn, elapsed, float64(syn)/elapsed)
-}
-
-// runScan lists every Logitech hidraw node and whether it answers HID++.
-func runScan() {
-	nodes, _ := filepath.Glob("/dev/hidraw*")
-	sort.Strings(nodes)
-	fmt.Println("Logitech (046d) hidraw nodes:")
-	for _, node := range nodes {
-		base := filepath.Base(node)
-		data, _ := os.ReadFile(fmt.Sprintf("/sys/class/hidraw/%s/device/uevent", base))
-		var id, name string
-		for _, line := range strings.Split(string(data), "\n") {
-			if strings.HasPrefix(line, "HID_ID=") {
-				id = strings.TrimPrefix(line, "HID_ID=")
-			} else if strings.HasPrefix(line, "HID_NAME=") {
-				name = strings.TrimPrefix(line, "HID_NAME=")
-			}
-		}
-		if !strings.Contains(strings.ToUpper(id), "046D") {
-			continue
-		}
-		fmt.Printf("\n%s  id=%s  name=%q\n", node, id, name)
-		f, oerr := os.OpenFile(node, os.O_RDWR, 0)
-		if oerr != nil {
-			fmt.Printf("  open: %v\n", oerr)
-			continue
-		}
-		f.Close()
-		for _, idx := range []byte{0x01, 0xFF, 0x02, 0x03} {
-			d, err := hidpp.Open(node, idx)
-			if err != nil {
-				fmt.Printf("  idx 0x%02X: open err %v\n", idx, err)
-				continue
-			}
-			d.Timeout = 400 * time.Millisecond
-			ver, perr := d.Ping()
-			if perr == nil {
-				nm, _ := d.DeviceName()
-				fmt.Printf("  idx 0x%02X: HID++ %s  name=%q  <-- responds\n", idx, ver, nm)
-			} else {
-				fmt.Printf("  idx 0x%02X: no response\n", idx)
-			}
-			d.Close()
+	for _, r := range results {
+		fmt.Printf("\n  %s\n  product=%q  usagePage=0x%04X  usage=0x%04X\n",
+			r.Path, r.ProductStr, r.UsagePage, r.Usage)
+		if r.HIDPPVer != "" {
+			fmt.Printf("  HID++ %s  name=%q  <-- responds\n", r.HIDPPVer, r.MarketName)
+		} else {
+			fmt.Printf("  no HID++ response on idx 0x01\n")
 		}
 	}
 }

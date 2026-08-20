@@ -2,46 +2,40 @@ package hidpp
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
+
+	hid "github.com/sstallion/go-hid"
 )
 
-const logitechVendor = "046D"
+const (
+	logitechVendorID = uint16(0x046D)
+	// hidppUsagePage is the Logitech private HID++ channel. On macOS a
+	// LIGHTSPEED receiver exposes several HID interfaces; we only want this one.
+	hidppUsagePage = uint16(0xFF43)
+)
 
-// Discover scans /dev/hidraw* for Logitech nodes that answer an HID++ 2.0 ping,
-// returning an open Device for each. Nodes that need root we silently skip and
-// surface via PermissionDenied so the UI can prompt for the udev fix.
+// Discover enumerates Logitech HID++ interfaces (usage page 0xFF43) and
+// returns an open Device for each one that answers a ping. The permDenied
+// return is always false on macOS — hidapi surfaces access errors via the
+// returned error from Open instead.
 func Discover() (devices []*Device, permDenied bool, err error) {
-	nodes, err := filepath.Glob("/dev/hidraw*")
-	if err != nil {
-		return nil, false, err
+	var candidates []*hid.DeviceInfo
+	if enumErr := hid.Enumerate(logitechVendorID, 0x0000, func(info *hid.DeviceInfo) error {
+		if info.UsagePage == hidppUsagePage {
+			candidates = append(candidates, info)
+		}
+		return nil
+	}); enumErr != nil {
+		return nil, false, enumErr
 	}
-	for _, node := range nodes {
-		base := filepath.Base(node)
-		hidID, hidName := sysfsInfo(base)
-		if !strings.Contains(strings.ToUpper(hidID), logitechVendor) {
-			continue
-		}
-		f, openErr := os.OpenFile(node, os.O_RDWR, 0)
-		if openErr != nil {
-			if os.IsPermission(openErr) {
-				permDenied = true
-			}
-			continue
-		}
-		f.Close()
 
-		// Try the directly-attached index first, then receiver slots. Use a
-		// short timeout for the probe pings so a non-responding index (e.g.
-		// 0xFF on a dj child node) doesn't stall discovery for the full 4s.
+	for _, info := range candidates {
+		// Try receiver slot 0x01 first (LIGHTSPEED paired mouse), then 0xFF
+		// (direct USB/BT), then additional slots.
 		for _, idx := range []byte{0x01, 0xFF, 0x02, 0x03, 0x04, 0x05, 0x06} {
-			d, oerr := Open(node, idx)
+			d, oerr := Open(info.Path, idx)
 			if oerr != nil {
-				if os.IsPermission(oerr) {
-					permDenied = true
-				}
 				break
 			}
 			d.Timeout = 350 * time.Millisecond
@@ -49,30 +43,53 @@ func Discover() (devices []*Device, permDenied bool, err error) {
 				d.Close()
 				continue
 			}
-			d.Timeout = 4 * time.Second // normal operations
-			d.Name = hidName
+			d.Timeout = 4 * time.Second
+			d.Name = info.ProductStr
 			devices = append(devices, d)
-			break // one working index per node is enough
+			break
 		}
 	}
-	return devices, permDenied, nil
+	return devices, false, nil
 }
 
-// sysfsInfo reads HID_ID and HID_NAME for a hidraw node from sysfs.
-func sysfsInfo(base string) (id, name string) {
-	data, err := os.ReadFile(fmt.Sprintf("/sys/class/hidraw/%s/device/uevent", base))
-	if err != nil {
-		return "", ""
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		switch {
-		case strings.HasPrefix(line, "HID_ID="):
-			id = strings.TrimPrefix(line, "HID_ID=")
-		case strings.HasPrefix(line, "HID_NAME="):
-			name = strings.TrimPrefix(line, "HID_NAME=")
+// ScanResult is one entry from a broad device scan across all Logitech HID
+// interfaces, regardless of usage page.
+type ScanResult struct {
+	Path       string
+	ProductStr string
+	UsagePage  uint16
+	Usage      uint16
+	HIDPPVer   string // empty if device did not respond to HID++ ping
+	MarketName string // DeviceNameType (0x0005) if available
+}
+
+// Scan enumerates every Logitech HID interface and pings each one. Useful for
+// diagnosing which interface is the HID++ channel and whether the mouse is
+// reachable.
+func Scan() []ScanResult {
+	var results []ScanResult
+	_ = hid.Enumerate(logitechVendorID, 0x0000, func(info *hid.DeviceInfo) error {
+		res := ScanResult{
+			Path:       info.Path,
+			ProductStr: info.ProductStr,
+			UsagePage:  info.UsagePage,
+			Usage:      info.Usage,
 		}
-	}
-	return id, name
+		d, err := Open(info.Path, 0x01)
+		if err != nil {
+			results = append(results, res)
+			return nil
+		}
+		d.Timeout = 400 * time.Millisecond
+		if ver, perr := d.Ping(); perr == nil {
+			res.HIDPPVer = ver
+			res.MarketName, _ = d.DeviceName()
+		}
+		d.Close()
+		results = append(results, res)
+		return nil
+	})
+	return results
 }
 
 // DeviceName reads the marketing name via feature 0x0005 (DeviceNameType),
