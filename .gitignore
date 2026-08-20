@@ -6,3 +6,4 @@ superstrike
 # editor / OS cruft
 *.swp
 .DS_Store
+superstrike-cli
