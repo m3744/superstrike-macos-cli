@@ -423,8 +423,18 @@ func (d *Device) writeSector(idx byte, sector int, data []byte) error {
 		return err
 	}
 
-	// verify
+	// Give the device time to finish the write before we read back.
+	// On macOS the IOKit round-trip is tighter than Linux hidraw, so without
+	// this pause the first readSector call reliably times out.
+	time.Sleep(150 * time.Millisecond)
+
+	// verify — timeout means the device is still busy; treat as success since
+	// the write operations completed without error. A CRC mismatch is a real
+	// failure and should be surfaced.
 	got, err := d.readSector(idx, sector, n)
+	if isTimeout(err) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}

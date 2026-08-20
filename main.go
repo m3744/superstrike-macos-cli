@@ -12,10 +12,12 @@ import (
 )
 
 func main() {
-	probe    := flag.Bool("probe", false, "print device info + full HID++ feature table")
-	profile  := flag.Bool("profile", false, "dump the active onboard profile (read-only)")
+	probe    := flag.Bool("probe",    false, "print device info + full HID++ feature table")
+	profile  := flag.Bool("profile",  false, "dump the active onboard profile (read-only)")
 	profiles := flag.Bool("profiles", false, "list all profiles + control sectors (read-only)")
-	scan     := flag.Bool("scan", false, "list all Logitech HID interfaces + HID++ ping results")
+	scan     := flag.Bool("scan",     false, "list all Logitech HID interfaces + HID++ ping results")
+	setDPI  := flag.Int("set-dpi",  0, "write DPI to the active onboard profile (100..44000)")
+	setRate := flag.Int("set-rate", 0, "write polling rate Hz to the active onboard profile (125/250/500/1000/2000/4000/8000)")
 	flag.Parse()
 
 	switch {
@@ -27,6 +29,10 @@ func main() {
 		runProfiles()
 	case *scan:
 		runScan()
+	case *setDPI != 0:
+		runSetDPI(*setDPI)
+	case *setRate != 0:
+		runSetRate(*setRate)
 	default:
 		flag.Usage()
 	}
@@ -150,6 +156,41 @@ func runProfiles() {
 		fmt.Printf("  slot %d  sector 0x%04X  enabled=%v%s  name=%q  DPI=(%d,%d)  %dHz\n",
 			p.Index, p.Sector, p.Enabled, active, p.Name, p.DPIX, p.DPIY, p.ReportRateHz)
 	}
+}
+
+// runSetDPI writes DPI to the active onboard profile. DPI applies live
+// (no profile reload needed) per REVERSE_ENGINEERING.md.
+func runSetDPI(dpi int) {
+	d := openMouse()
+	defer d.Close()
+	p, err := d.ActiveProfile()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "read profile:", err)
+		os.Exit(1)
+	}
+	if err := d.WriteProfileResolution(p.Sector, dpi, dpi); err != nil {
+		fmt.Fprintln(os.Stderr, "set DPI:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("DPI set to %d on active profile (sector 0x%04X)\n", dpi, p.Sector)
+}
+
+// runSetRate writes polling rate to the active onboard profile. The firmware
+// only loads a profile's rate on a profile switch, so SetProfileReportRateHz
+// bounces through another profile automatically to make it take effect.
+func runSetRate(hz int) {
+	d := openMouse()
+	defer d.Close()
+	p, err := d.ActiveProfile()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "read profile:", err)
+		os.Exit(1)
+	}
+	if err := d.SetProfileReportRateHz(p.Sector, hz); err != nil {
+		fmt.Fprintln(os.Stderr, "set rate:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Polling rate set to %d Hz on active profile (sector 0x%04X)\n", hz, p.Sector)
 }
 
 // runScan lists every Logitech HID interface on the system and whether it
