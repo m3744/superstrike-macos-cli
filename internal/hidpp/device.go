@@ -8,21 +8,18 @@ import (
 	hid "github.com/sstallion/go-hid"
 )
 
-const (
-	logitechVendorID = uint16(0x046D)
-	// hidppUsagePage is the Logitech private HID++ channel. On macOS a
-	// LIGHTSPEED receiver exposes several HID interfaces; we only want this one.
-	hidppUsagePage = uint16(0xFF43)
-)
+const logitechVendorID = uint16(0x046D)
 
-// Discover enumerates Logitech HID++ interfaces (usage page 0xFF43) and
-// returns an open Device for each one that answers a ping. The permDenied
-// return is always false on macOS — hidapi surfaces access errors via the
-// returned error from Open instead.
+// Discover enumerates Logitech vendor-defined HID interfaces (usage page
+// 0xFF**) and returns an open Device for each that answers a HID++ ping.
+// We take only usage=0x0001 per service to avoid duplicating the same mouse
+// across the two vendor interfaces a LIGHTSPEED receiver exposes.
+// The permDenied return is always false on macOS — hidapi surfaces access
+// errors via the returned error from Open instead.
 func Discover() (devices []*Device, permDenied bool, err error) {
 	var candidates []*hid.DeviceInfo
 	if enumErr := hid.Enumerate(logitechVendorID, 0x0000, func(info *hid.DeviceInfo) error {
-		if info.UsagePage == hidppUsagePage {
+		if info.UsagePage>>8 == 0xFF && info.Usage == 0x0001 {
 			candidates = append(candidates, info)
 		}
 		return nil
