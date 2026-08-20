@@ -18,7 +18,16 @@ func main() {
 	scan     := flag.Bool("scan",     false, "list all Logitech HID interfaces + HID++ ping results")
 	setDPI  := flag.Int("set-dpi",  0, "write DPI to the active onboard profile (100..44000)")
 	setRate := flag.Int("set-rate", 0, "write polling rate Hz to the active onboard profile (125/250/500/1000/2000/4000/8000)")
+	hits        := flag.Bool("hits", false, "read HITS analog button config (actuation, rapid-trigger, haptics)")
+	setActL     := flag.Int("set-actuation-l", -1, "left button actuation point (1..10)")
+	setActR     := flag.Int("set-actuation-r", -1, "right button actuation point (1..10)")
+	setRTL      := flag.Int("set-rt-l",        -1, "left button rapid trigger (0..5)")
+	setRTR      := flag.Int("set-rt-r",        -1, "right button rapid trigger (0..5)")
+	setHapticsL := flag.Int("set-haptics-l",   -1, "left button haptics intensity (0..5)")
+	setHapticsR := flag.Int("set-haptics-r",   -1, "right button haptics intensity (0..5)")
 	flag.Parse()
+
+	hitsWrite := *setActL >= 0 || *setActR >= 0 || *setRTL >= 0 || *setRTR >= 0 || *setHapticsL >= 0 || *setHapticsR >= 0
 
 	switch {
 	case *probe:
@@ -33,6 +42,10 @@ func main() {
 		runSetDPI(*setDPI)
 	case *setRate != 0:
 		runSetRate(*setRate)
+	case *hits:
+		runHits()
+	case hitsWrite:
+		runSetHits(*setActL, *setActR, *setRTL, *setRTR, *setHapticsL, *setHapticsR)
 	default:
 		flag.Usage()
 	}
@@ -191,6 +204,62 @@ func runSetRate(hz int) {
 		os.Exit(1)
 	}
 	fmt.Printf("Polling rate set to %d Hz on active profile (sector 0x%04X)\n", hz, p.Sector)
+}
+
+// runHits reads the HITS analog config for both L and R buttons.
+func runHits() {
+	d := openMouse()
+	defer d.Close()
+	caps, err := d.AnalogCaps()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "HITS caps:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("HITS capabilities: maxActuation=%d  maxRapidTrigger=%d  maxHaptics=%d\n",
+		caps.MaxActuation, caps.MaxRapidTrigger, caps.MaxHaptics)
+	for i, name := range hidpp.AnalogButtonNames {
+		cfg, err := d.AnalogConfig(i)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  %s: %v\n", name, err)
+			continue
+		}
+		fmt.Printf("  %-14s actuation=%d  rapid-trigger=%d  haptics=%d\n",
+			name+":", cfg.Actuation, cfg.RapidTrigger, cfg.Haptics)
+	}
+}
+
+// runSetHits applies any HITS write flags that are >= 0. Each setter does a
+// read-modify-write internally so unspecified fields are preserved.
+// Changes apply live — no profile reload needed.
+func runSetHits(actL, actR, rtL, rtR, hapL, hapR int) {
+	d := openMouse()
+	defer d.Close()
+
+	type op struct {
+		button int
+		side   string
+		field  string
+		value  int
+		fn     func(int, int) error
+	}
+	ops := []op{
+		{0, "Left",  "actuation",     actL, d.SetActuation},
+		{1, "Right", "actuation",     actR, d.SetActuation},
+		{0, "Left",  "rapid-trigger", rtL,  d.SetRapidTrigger},
+		{1, "Right", "rapid-trigger", rtR,  d.SetRapidTrigger},
+		{0, "Left",  "haptics",       hapL, d.SetHaptics},
+		{1, "Right", "haptics",       hapR, d.SetHaptics},
+	}
+	for _, o := range ops {
+		if o.value < 0 {
+			continue
+		}
+		if err := o.fn(o.button, o.value); err != nil {
+			fmt.Fprintf(os.Stderr, "set %s %s: %v\n", o.side, o.field, err)
+			os.Exit(1)
+		}
+		fmt.Printf("%s button %s set to %d\n", o.side, o.field, o.value)
+	}
 }
 
 // runScan lists every Logitech HID interface on the system and whether it
