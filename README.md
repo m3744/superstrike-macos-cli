@@ -1,133 +1,176 @@
-# Linux Superstrike
+# superstrike-macos-cli
 
-**A native Linux control app for the Logitech PRO X 2 Superstrike** — the G HUB
-features that mouse needs (DPI, polling rate, haptics, button remapping,
-profiles), on Linux, in a single self-contained binary. No daemon, no Wine, no
-cloud account.
+macOS CLI for the **Logitech PRO X 2 SUPERSTRIKE**. Reads and writes device
+settings directly over HID++ 2.0 via IOKit — no G HUB, no daemon, no account.
 
-![Superstrike Control dashboard](docs/dashboard.png)
+Ported from [mclol0/linux-superstrike](https://github.com/mclol0/linux-superstrike)
+(Linux, Fyne GUI) to a pure macOS CLI using
+[go-hid](https://github.com/sstallion/go-hid) (hidapi/IOKit bindings).
 
-> 🤖 **Fully vibe-coded** — this entire app (protocol reverse-engineering and
-> all) was built collaboratively with an AI coding assistant. See
-> [`REVERSE_ENGINEERING.md`](REVERSE_ENGINEERING.md) for how the mouse's HID++
-> protocol and onboard-profile format were figured out.
+## Requirements
 
-## Why this exists
+- macOS (Apple Silicon or Intel)
+- Go 1.21+
+- LIGHTSPEED USB receiver plugged in, mouse powered on
+- **Input Monitoring** permission for your terminal app
+  → System Settings → Privacy & Security → Input Monitoring
 
-The PRO X 2 Superstrike has no Logitech software on Linux, and existing tools
-(Solaar, libratbag) don't yet cover its newer features — especially its
-**haptic switches** and its quirky onboard-profile layout. This app talks the
-**HID++ 2.0** protocol directly over `/dev/hidraw` and configures the mouse the
-same way G HUB does under the hood: by editing its **onboard profiles**, so
-your settings apply instantly **and persist on the mouse itself**.
-
-## Features
-
-- **Dashboard** — live device info, active profile, current DPI, **real polling
-  rate measured from your actual mouse movement**, and an animated battery gauge.
-- **Profiles** — full management of all 5 onboard profiles: per-profile **DPI
-  (X/Y)**, **polling rate** (125–8000 Hz), enable/disable, set-active, and rename.
-- **Buttons** — remap any button to another **mouse button**, a **keyboard key**
-  (with Ctrl/Shift/Alt/Super), a **media key**, a built-in **function**
-  (DPI/profile cycle, etc.), or disable it.
-- **Haptics** — tune the analog buttons' **click haptics**, **actuation point**,
-  and **rapid trigger** (feature `0x1B0C`).
-- Clean, themed UI; everything writes to onboard memory and **survives reboots**.
-
-## Install
-
-### Option A — download the release (recommended)
-
-1. Grab the latest `superstrike` binary from the
-   [**Releases**](../../releases) page and make it executable:
-   ```sh
-   chmod +x superstrike
-   ```
-2. **Grant access to the mouse** (one-time udev rule, so it runs without sudo):
-   ```sh
-   sudo tee /etc/udev/rules.d/70-logitech-superstrike.rules >/dev/null <<'EOF'
-   KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", MODE="0660", TAG+="uaccess"
-   SUBSYSTEM=="usb", ATTRS{idVendor}=="046d", MODE="0660", TAG+="uaccess"
-   EOF
-   sudo udevadm control --reload-rules && sudo udevadm trigger
-   ```
-   Then replug the mouse (or reboot).
-
-   > ⚠️ **The filename number matters.** The rule must be numbered **below 73**
-   > (we use `70-`). systemd's `73-seat-late.rules` is what turns the `uaccess`
-   > tag into a per-user ACL, and udev applies rules in lexical order — a `99-`
-   > rule sets the tag *too late*, so the device stays root-only. The usual
-   > symptom is "it worked, then after a reboot the app says no mouse / permission
-   > denied." If you installed an older `99-…` rule, delete it:
-   > `sudo rm /etc/udev/rules.d/99-logitech-superstrike.rules`
-3. Run it:
-   ```sh
-   ./superstrike
-   ```
-
-> The binary is dynamically linked against the standard desktop OpenGL/X11
-> libraries (a GUI-toolkit requirement) — present on essentially every Linux
-> desktop. If something's missing it'll tell you.
-
-### Option B — build from source
-
-Requires Go 1.23+ and the usual GL/X11 dev headers (for the GUI).
+## Build
 
 ```sh
-git clone https://github.com/mclol0/linux-superstrike
-cd linux-superstrike
-go build -o superstrike .
+git clone https://github.com/m3744/superstrike-macos-cli
+cd superstrike-macos-cli
+go build -o superstrike-cli .
 ```
 
-To install it as a desktop app (icon + launcher in your menu):
+## Usage
+
+### Diagnostics
 
 ```sh
-./packaging/install.sh
+# List all Logitech HID interfaces and whether they respond to HID++
+./superstrike-cli --scan
+
+# Print device info, battery, DPI, polling rate, and full HID++ feature table
+./superstrike-cli --probe
 ```
+
+### Read current settings
+
+```sh
+# Show active onboard profile (DPI, polling rate, button assignments)
+./superstrike-cli --profile
+
+# List all 5 profile slots
+./superstrike-cli --profiles
+
+# Show HITS (haptic trigger) config for both buttons
+./superstrike-cli --hits
+```
+
+### DPI
+
+```sh
+./superstrike-cli --set-dpi 1600
+./superstrike-cli --set-dpi 800
+```
+
+Range: 100–44000. Writes to the active onboard profile and applies immediately.
+Note: the live DPI setter register is a firmware no-op on this device; the
+profile write is the only effective path.
+
+### Polling rate
+
+```sh
+./superstrike-cli --set-rate 4000
+./superstrike-cli --set-rate 1000
+```
+
+Supported rates: `125` / `250` / `500` / `1000` / `2000` / `4000` / `8000`.
+Writes to the active profile and does a profile-bounce to apply the new rate.
+
+### HITS — haptic inductive trigger system
+
+```sh
+# Actuation point depth: 1 (shallow) to 10 (deep)
+./superstrike-cli --set-actuation-l 3 --set-actuation-r 3
+
+# Rapid trigger sensitivity: 0 (off) to 5
+./superstrike-cli --set-rt-l 2 --set-rt-r 2
+
+# Haptic click intensity: 0 (off) to 5 (strongest)
+./superstrike-cli --set-haptics-l 4 --set-haptics-r 4
+
+# Multiple settings in one call
+./superstrike-cli --set-actuation-l 4 --set-haptics-l 3 --set-rt-l 1
+```
+
+Changes apply live — no profile reload needed.
+
+### Profile management
+
+```sh
+# Switch active profile (1–5)
+./superstrike-cli --switch-profile 2
+
+# Enable / disable a profile slot
+./superstrike-cli --enable-profile 2
+./superstrike-cli --disable-profile 2
+
+# Rename the active profile (max 24 chars)
+./superstrike-cli --set-name "Gaming"
+```
+
+### Button remapping
+
+Remaps apply to the active onboard profile.
+
+```sh
+./superstrike-cli --remap-b4 "next-profile" --remap-b5 "vol-up"
+./superstrike-cli --remap-b3 "ctrl+c"
+./superstrike-cli --remap-b3 "ctrl+shift+z"
+./superstrike-cli --remap-b4 "back"       # restore default
+```
+
+**Button numbers:**
+
+| # | Default |
+|---|---------|
+| 1 | Left click |
+| 2 | Right click |
+| 3 | Middle click |
+| 4 | Back |
+| 5 | Forward |
+
+**Action syntax:**
+
+| Category | Values |
+|----------|--------|
+| Mouse | `left` `right` `middle` `back` `forward` |
+| Function | `next-dpi` `prev-dpi` `cycle-dpi` `default-dpi` `dpi-shift` `next-profile` `prev-profile` `cycle-profile` `battery-status` |
+| Media | `play-pause` `next-track` `prev-track` `stop` `mute` `vol-up` `vol-down` |
+| Key | `a`–`z`  `0`–`9`  `f1`–`f12`  `space`  `enter`  `tab`  `escape`  `backspace`  `delete` |
+| Key + modifier | `ctrl+c`  `shift+f5`  `ctrl+shift+z`  (modifiers: `ctrl` `shift` `alt` `super`) |
+| Disable | `disabled` |
+
+## Safety
+
+Settings write to the mouse's onboard profile memory, not to firmware flash.
+
+- **DPI and HITS** writes are always reversible — run the command again with the
+  old value or open G HUB to restore defaults.
+- **Profile writes** (buttons, rate, name) read the current sector first, patch
+  only the bytes that change, recompute the CRC, write back, then verify.
+  A rejected write leaves the slot unchanged.
+- **Never touched:** `0x1802 DeviceReset`, `0x9403 FlashUpdate`, or any
+  manufacturing / firmware features. The physical HITS mechanism on buttons 1
+  and 2 is unaffected by remapping.
+- G HUB (Windows/macOS) can restore factory defaults if needed.
 
 ## How it works
 
-This mouse ignores the standard *live* DPI/rate setters in firmware — the only
-thing that actually takes effect (and what G HUB does) is editing the **onboard
-profile** stored on the mouse. So the app:
+The mouse ignores the standard live DPI/rate setter calls in firmware — the only
+path that takes effect is editing the **onboard profile** stored on the mouse,
+which is what G HUB does under the hood. This tool:
 
-- speaks HID++ 2.0 directly over `/dev/hidraw` (no `hidapi`/CGO HID dependency);
-- reads/writes the profile sectors (DPI, report rate, buttons, RGB), recomputing
-  the CRC and verifying the write;
-- measures the **true** polling rate by counting HID input reports, because the
-  device's rate register reports a stale value.
+- speaks HID++ 2.0 directly over IOKit via go-hid (no external daemon);
+- reads/writes profile sectors (DPI, report rate, buttons, name), recomputes the
+  CRC-16/CCITT-FALSE checksum, and verifies the write;
+- discovers the device via `hid.Enumerate` filtering on the Logitech vendor page
+  (`usagePage=0xFF00, usage=0x0001`), the private HID++ channel on the
+  LIGHTSPEED receiver.
 
-For the full protocol details — feature table, DPI/rate encodings, the onboard
-profile sector layout, haptics, and button format — see
+For the full protocol details — feature table, DPI/rate encodings, onboard
+profile sector layout, haptics, button format — see
 [**`REVERSE_ENGINEERING.md`**](REVERSE_ENGINEERING.md).
 
-## Headless / debugging
+## Credits
 
-The binary doubles as a CLI for diagnostics:
+Protocol details are from [mclol0/linux-superstrike](https://github.com/mclol0/linux-superstrike)
+and cross-referenced with [Solaar](https://github.com/pwr-Solaar/Solaar) and
+[libratbag](https://github.com/libratbag/libratbag).
 
-```
-superstrike -probe        # device info + full HID++ feature table
-superstrike -profiles     # list all profiles + control sectors
-superstrike -measurerate  # measure the real report rate (move the mouse)
-superstrike -scan         # list Logitech hidraw nodes + HID++ responses
-```
-
-## Status & compatibility
-
-- Verified on the **PRO X 2 Superstrike** over the LIGHTSPEED receiver.
-- Detection is connection-agnostic (any USB port, the dongle, reconnects). Wired
-  and Bluetooth modes should work too; if a mode isn't detected, run
-  `superstrike -scan` in that mode and open an issue with the output.
-
-## Credits & disclaimer
-
-Protocol details were informed by the excellent
-[Solaar](https://github.com/pwr-Solaar/Solaar) and
-[libratbag](https://github.com/libratbag/libratbag) projects.
-
-This is an **unofficial** community tool, **not affiliated with or endorsed by
-Logitech**. It writes to your mouse's onboard memory; it's careful (CRC-verified
-writes, read-back), but use it at your own risk.
+Unofficial community tool, not affiliated with or endorsed by Logitech.
 
 ## License
 
