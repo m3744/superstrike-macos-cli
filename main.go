@@ -25,9 +25,19 @@ func main() {
 	setRTR      := flag.Int("set-rt-r",        -1, "right button rapid trigger (0..5)")
 	setHapticsL := flag.Int("set-haptics-l",   -1, "left button haptics intensity (0..5)")
 	setHapticsR := flag.Int("set-haptics-r",   -1, "right button haptics intensity (0..5)")
+	switchProf  := flag.Int("switch-profile",   0, "switch active profile by slot number (1..5)")
+	enableProf  := flag.Int("enable-profile",   0, "enable profile slot (1..5)")
+	disableProf := flag.Int("disable-profile",  0, "disable profile slot (1..5)")
+	setName     := flag.String("set-name", "", "set name of the active profile")
+	remapB1     := flag.String("remap-b1", "", "remap button 1 (Left)   — see action syntax below")
+	remapB2     := flag.String("remap-b2", "", "remap button 2 (Right)  — see action syntax below")
+	remapB3     := flag.String("remap-b3", "", "remap button 3 (Middle) — see action syntax below")
+	remapB4     := flag.String("remap-b4", "", "remap button 4 (Back)   — see action syntax below")
+	remapB5     := flag.String("remap-b5", "", "remap button 5 (Forward)— see action syntax below")
 	flag.Parse()
 
-	hitsWrite := *setActL >= 0 || *setActR >= 0 || *setRTL >= 0 || *setRTR >= 0 || *setHapticsL >= 0 || *setHapticsR >= 0
+	hitsWrite  := *setActL >= 0 || *setActR >= 0 || *setRTL >= 0 || *setRTR >= 0 || *setHapticsL >= 0 || *setHapticsR >= 0
+	remapAny   := *remapB1 != "" || *remapB2 != "" || *remapB3 != "" || *remapB4 != "" || *remapB5 != ""
 
 	switch {
 	case *probe:
@@ -46,6 +56,16 @@ func main() {
 		runHits()
 	case hitsWrite:
 		runSetHits(*setActL, *setActR, *setRTL, *setRTR, *setHapticsL, *setHapticsR)
+	case *switchProf != 0:
+		runSwitchProfile(*switchProf)
+	case *enableProf != 0:
+		runSetProfileEnabled(*enableProf, true)
+	case *disableProf != 0:
+		runSetProfileEnabled(*disableProf, false)
+	case *setName != "":
+		runSetName(*setName)
+	case remapAny:
+		runRemap([5]string{*remapB1, *remapB2, *remapB3, *remapB4, *remapB5})
 	default:
 		flag.Usage()
 	}
@@ -260,6 +280,156 @@ func runSetHits(actL, actR, rtL, rtR, hapL, hapR int) {
 		}
 		fmt.Printf("%s button %s set to %d\n", o.side, o.field, o.value)
 	}
+}
+
+// runSwitchProfile switches the active onboard profile by 1-based slot number.
+func runSwitchProfile(slot int) {
+	d := openMouse()
+	defer d.Close()
+	profs, err := d.Profiles()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "list profiles:", err)
+		os.Exit(1)
+	}
+	for _, p := range profs {
+		if p.Index == slot {
+			if err := d.SetCurrentProfileSector(p.Sector); err != nil {
+				fmt.Fprintln(os.Stderr, "switch profile:", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Switched to profile %d (sector 0x%04X)  name=%q\n", slot, p.Sector, p.Name)
+			return
+		}
+	}
+	fmt.Fprintf(os.Stderr, "profile slot %d not found\n", slot)
+	os.Exit(1)
+}
+
+// runSetProfileEnabled enables or disables a profile slot by 1-based index.
+func runSetProfileEnabled(slot int, enabled bool) {
+	d := openMouse()
+	defer d.Close()
+	if err := d.SetProfileEnabled(slot, enabled); err != nil {
+		fmt.Fprintln(os.Stderr, "set profile enabled:", err)
+		os.Exit(1)
+	}
+	state := "enabled"
+	if !enabled {
+		state = "disabled"
+	}
+	fmt.Printf("Profile slot %d %s\n", slot, state)
+}
+
+// runSetName sets the active profile's name (up to 24 chars, stored UTF-16LE).
+func runSetName(name string) {
+	d := openMouse()
+	defer d.Close()
+	p, err := d.ActiveProfile()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "read profile:", err)
+		os.Exit(1)
+	}
+	if err := d.SetProfileName(p.Sector, name); err != nil {
+		fmt.Fprintln(os.Stderr, "set name:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Profile %d name set to %q\n", p.Index, name)
+}
+
+// runRemap applies button remaps to the active profile.
+// Empty strings are skipped. Action syntax:
+//
+//	Mouse:    left right middle back forward
+//	Function: next-dpi prev-dpi cycle-dpi default-dpi dpi-shift
+//	          next-profile prev-profile cycle-profile battery-status
+//	Media:    play-pause next-track prev-track stop mute vol-up vol-down
+//	Key:      a-z 0-9 f1-f12 space enter tab escape backspace delete
+//	          (with optional modifiers: ctrl+c  shift+f5  ctrl+shift+z)
+//	Disable:  disabled
+func runRemap(remaps [5]string) {
+	d := openMouse()
+	defer d.Close()
+	p, err := d.ActiveProfile()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "read profile:", err)
+		os.Exit(1)
+	}
+	for i, s := range remaps {
+		if s == "" {
+			continue
+		}
+		action, err := parseButtonAction(s)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "button %d: %v\n", i+1, err)
+			os.Exit(1)
+		}
+		if err := d.SetProfileButton(p.Sector, i, action); err != nil {
+			fmt.Fprintf(os.Stderr, "button %d remap: %v\n", i+1, err)
+			os.Exit(1)
+		}
+		fmt.Printf("Button %d → %s\n", i+1, action.Describe())
+	}
+}
+
+// parseButtonAction converts a user-facing action string to a ButtonAction.
+func parseButtonAction(s string) (hidpp.ButtonAction, error) {
+	s = strings.ToLower(strings.TrimSpace(s))
+
+	if s == "disabled" || s == "none" || s == "disable" {
+		return hidpp.ButtonAction{Kind: hidpp.ButtonDisabled}, nil
+	}
+
+	// Mouse buttons
+	mouseMap := map[string]uint16{
+		"left": 0x0001, "right": 0x0002, "middle": 0x0004,
+		"back": 0x0008, "forward": 0x0010, "dpi-button": 0x2000,
+	}
+	if code, ok := mouseMap[s]; ok {
+		return hidpp.ButtonAction{Kind: hidpp.ButtonMouse, Code: code}, nil
+	}
+
+	// Mouse functions — normalise name to kebab-case for matching
+	normalize := func(n string) string {
+		n = strings.ToLower(n)
+		n = strings.ReplaceAll(n, " ", "-")
+		n = strings.ReplaceAll(n, "(", "")
+		n = strings.ReplaceAll(n, ")", "")
+		return n
+	}
+	for _, c := range hidpp.FunctionChoices {
+		if normalize(c.Name) == s {
+			return hidpp.ButtonAction{Kind: hidpp.ButtonFunction, Code: c.Code}, nil
+		}
+	}
+
+	// Media keys
+	mediaMap := map[string]uint16{
+		"play-pause": 0x00CD, "next-track": 0x00B5, "prev-track": 0x00B6,
+		"stop": 0x00B7, "mute": 0x00E2, "vol-up": 0x00E9, "vol-down": 0x00EA,
+	}
+	if code, ok := mediaMap[s]; ok {
+		return hidpp.ButtonAction{Kind: hidpp.ButtonConsumer, Code: code}, nil
+	}
+
+	// Keyboard key, optionally prefixed with modifiers: "ctrl+c", "shift+f5"
+	parts := strings.Split(s, "+")
+	var mods byte
+	modMap := map[string]byte{"ctrl": 0x01, "shift": 0x02, "alt": 0x04, "super": 0x08, "cmd": 0x08}
+	for _, part := range parts[:len(parts)-1] {
+		m, ok := modMap[part]
+		if !ok {
+			return hidpp.ButtonAction{}, fmt.Errorf("unknown modifier %q", part)
+		}
+		mods |= m
+	}
+	keyStr := parts[len(parts)-1]
+	for _, c := range hidpp.KeyChoices {
+		if strings.ToLower(c.Name) == keyStr {
+			return hidpp.ButtonAction{Kind: hidpp.ButtonKey, Mods: mods, Code: c.Code}, nil
+		}
+	}
+
+	return hidpp.ButtonAction{}, fmt.Errorf("unknown action %q — run with -help to see valid actions", s)
 }
 
 // runScan lists every Logitech HID interface on the system and whether it
