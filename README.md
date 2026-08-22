@@ -55,8 +55,21 @@ go build -o superstrike-cli .
 ```
 
 Range: 100–44000. Writes to the active onboard profile and applies immediately.
-Note: the live DPI setter register is a firmware no-op on this device; the
-profile write is the only effective path.
+
+**Firmware quirks to be aware of:**
+
+- The live DPI setter (HID++ `0x2202 fn6`) is a no-op on this device's firmware.
+  The profile sector write is the only path that takes effect — which is also
+  what G HUB does under the hood.
+- The HID++ DPI getter (`fn5`) always returns a stale cached value regardless of
+  what was written. `--probe` reads the current DPI from the profile sector
+  directly (authoritative); `--profile` does the same.
+
+**macOS tracking speed stacks on top of hardware DPI.** If you change DPI and
+the cursor feels the same, check System Settings → Mouse → Tracking Speed — a
+high OS setting can mask the hardware change. To feel a clean difference, set
+the OS tracking speed to the midpoint and compare values far apart (e.g. 400 vs
+3200).
 
 ### Polling rate
 
@@ -128,7 +141,7 @@ Remaps apply to the active onboard profile.
 | Mouse | `left` `right` `middle` `back` `forward` |
 | Function | `next-dpi` `prev-dpi` `cycle-dpi` `default-dpi` `dpi-shift` `next-profile` `prev-profile` `cycle-profile` `battery-status` |
 | Media | `play-pause` `next-track` `prev-track` `stop` `mute` `vol-up` `vol-down` |
-| Key | `a`–`z`  `0`–`9`  `f1`–`f12`  `space`  `enter`  `tab`  `escape`  `backspace`  `delete` |
+| Key | `a`–`z`  `0`–`9`  `f1`–`f12`  `space`  `enter`  `tab`  `escape`  `backspace`  `delete`  `up arrow`  `down arrow`  `left arrow`  `right arrow`  `home`  `end`  `page up`  `page down` |
 | Key + modifier | `ctrl+c`  `shift+f5`  `ctrl+shift+z`  (modifiers: `ctrl` `shift` `alt` `super`) |
 | Disable | `disabled` |
 

@@ -132,7 +132,13 @@ func runProbe() {
 			fmt.Printf("  battery        : %d%% (charging=%v) via %s\n", b.Percent, b.Charging, b.Source)
 		}
 		if dpi, err := d.DPI(); err == nil {
-			fmt.Printf("  dpi            : current=%d range=%d-%d step=%d\n", dpi.Current, dpi.Min, dpi.Max, dpi.Step)
+			// getSensorDpi is documented as returning stale values on this device;
+			// read the authoritative current DPI from the active profile sector instead.
+			cur := dpi.Current
+			if p, perr := d.ActiveProfile(); perr == nil && p.DPIX > 0 {
+				cur = p.DPIX
+			}
+			fmt.Printf("  dpi            : current=%d range=%d-%d step=%d\n", cur, dpi.Min, dpi.Max, dpi.Step)
 		}
 		if cur, sup, err := d.ReportRate(); err == nil {
 			fmt.Printf("  report rate    : current=%dHz supported=%v\n", cur, sup)
@@ -191,8 +197,8 @@ func runProfiles() {
 	}
 }
 
-// runSetDPI writes DPI to the active onboard profile. DPI applies live
-// (no profile reload needed) per REVERSE_ENGINEERING.md.
+// runSetDPI writes DPI to the active onboard profile and verifies the write
+// by reading the sector back. DPI applies live per REVERSE_ENGINEERING.md.
 func runSetDPI(dpi int) {
 	d := openMouse()
 	defer d.Close()
@@ -203,6 +209,13 @@ func runSetDPI(dpi int) {
 	}
 	if err := d.WriteProfileResolution(p.Sector, dpi, dpi); err != nil {
 		fmt.Fprintln(os.Stderr, "set DPI:", err)
+		os.Exit(1)
+	}
+	// Verify the write landed by reading back from the profile sector.
+	// getSensorDpi (the HID++ getter) is documented as stale on this device.
+	after, err := d.ActiveProfile()
+	if err == nil && after.DPIX != dpi {
+		fmt.Fprintf(os.Stderr, "DPI write may not have applied: profile reads back %d (expected %d)\n", after.DPIX, dpi)
 		os.Exit(1)
 	}
 	fmt.Printf("DPI set to %d on active profile (sector 0x%04X)\n", dpi, p.Sector)
