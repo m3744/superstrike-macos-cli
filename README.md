@@ -1,11 +1,10 @@
 # superstrike-macos-cli
 
+**Fork of [mclol0/linux-superstrike](https://github.com/mclol0/linux-superstrike).** Ported from Linux/Fyne GUI to a pure macOS CLI.
+
 macOS CLI for the **Logitech PRO X 2 SUPERSTRIKE**. Reads and writes device
 settings directly over HID++ 2.0 via IOKit — no G HUB, no daemon, no account.
-
-Ported from [mclol0/linux-superstrike](https://github.com/mclol0/linux-superstrike)
-(Linux, Fyne GUI) to a pure macOS CLI using
-[go-hid](https://github.com/sstallion/go-hid) (hidapi/IOKit bindings).
+Uses [go-hid](https://github.com/sstallion/go-hid) (hidapi/IOKit bindings).
 
 ## Requirements
 
