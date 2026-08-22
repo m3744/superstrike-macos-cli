@@ -99,6 +99,27 @@ Writes to the active profile and does a profile-bounce to apply the new rate.
 
 Changes apply live — no profile reload needed.
 
+**Rapid-trigger getter quirk:** `--hits` shows the last *active* RT sensitivity
+value. When RT is set to off (0), the getter returns the previous non-zero value
+rather than 0 — this is a firmware limitation, not a read error. The write is
+applied live regardless.
+
+### HITS presets
+
+Apply a named configuration in one command:
+
+```sh
+./superstrike-cli --preset superlight2
+```
+
+| Preset | Actuation | Rapid Trigger | Haptics | Description |
+|--------|-----------|---------------|---------|-------------|
+| `superlight2` | 5 | off | 3 | Closest match to PRO X Superlight 2 LIGHTFORCE click feel |
+
+The `superlight2` preset matches the settings recommended by Logitech to
+simulate a standard Superlight 2: mid-depth actuation, no rapid trigger
+(the Superlight 2 lacks this feature), and medium haptic intensity.
+
 ### Profile management
 
 ```sh
