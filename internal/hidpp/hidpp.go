@@ -11,6 +11,7 @@ package hidpp
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -89,12 +90,13 @@ func errName(code byte) string {
 // device index (0x01 for a LIGHTSPEED-paired mouse, 0xFF for direct USB/BT).
 // All calls are serialised by mu so request/response pairs never interleave.
 type Device struct {
-	mu      sync.Mutex
-	dev     *hid.Device
-	Path    string
-	Index   byte
-	Name    string // HID product string from enumeration
-	Timeout time.Duration
+	mu         sync.Mutex
+	dev        *hid.Device
+	Path       string
+	Index      byte
+	Name       string // HID product string from enumeration
+	Timeout    time.Duration
+	featCache  map[uint16]Feature // feature-index cache; populated lazily by FeatureIndex
 }
 
 // Open opens a HID device by its IOKit path for HID++ traffic.
@@ -183,6 +185,8 @@ func (d *Device) drain() {
 }
 
 // read blocks for the next inbound report until deadline.
+// All timeout variants from the HID layer are normalised to ErrTimeout so
+// callers can use a single sentinel check.
 func (d *Device) read(deadline time.Time) ([]byte, error) {
 	remaining := time.Until(deadline)
 	if remaining <= 0 {
@@ -191,6 +195,9 @@ func (d *Device) read(deadline time.Time) ([]byte, error) {
 	buf := make([]byte, veryLongLen)
 	nr, err := d.dev.ReadWithTimeout(buf, remaining)
 	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "timeout") {
+			return nil, ErrTimeout
+		}
 		return nil, fmt.Errorf("hidpp: read: %w", err)
 	}
 	if nr == 0 {

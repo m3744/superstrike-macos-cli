@@ -109,8 +109,18 @@ func (d *Device) Ping() (string, error) {
 }
 
 // FeatureIndex resolves a feature id to its runtime index via IRoot.getFeature.
-// An index of 0 means the feature is absent.
+// An index of 0 means the feature is absent. Results are cached for the
+// lifetime of the Device — the feature table is static for a connected mouse.
 func (d *Device) FeatureIndex(id uint16) (Feature, error) {
+	d.mu.Lock()
+	if d.featCache != nil {
+		if f, ok := d.featCache[id]; ok {
+			d.mu.Unlock()
+			return f, nil
+		}
+	}
+	d.mu.Unlock()
+
 	resp, err := d.Call(FeatIRoot, 0x00, byte(id>>8), byte(id&0xFF))
 	if err != nil {
 		return Feature{}, err
@@ -119,13 +129,22 @@ func (d *Device) FeatureIndex(id uint16) (Feature, error) {
 		return Feature{}, ErrShortRead
 	}
 	flags := resp[1]
-	return Feature{
+	f := Feature{
 		ID:          id,
 		Index:       resp[0],
 		Obsolete:    flags&0x80 != 0,
 		Hidden:      flags&0x40 != 0,
 		Engineering: flags&0x20 != 0,
-	}, nil
+	}
+
+	d.mu.Lock()
+	if d.featCache == nil {
+		d.featCache = make(map[uint16]Feature)
+	}
+	d.featCache[id] = f
+	d.mu.Unlock()
+
+	return f, nil
 }
 
 // Has reports whether the device exposes a feature (index != 0).

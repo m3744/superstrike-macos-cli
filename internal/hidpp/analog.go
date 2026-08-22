@@ -103,45 +103,59 @@ func (d *Device) AnalogConfig(button int) (AnalogConfig, error) {
 
 // writeAnalog sends a full config for a button, wire-encoding each field and
 // preserving the firmware sensitivity flag on the rapid-trigger byte.
+// A timeout is treated as best-effort success — the Superstrike firmware
+// applies some HITS changes (notably disabling rapid-trigger) without
+// sending an ack, matching the behaviour documented for the DPI setter.
 func (d *Device) writeAnalog(button int, c AnalogConfig) error {
 	idx, err := d.analogIndex()
 	if err != nil {
 		return err
 	}
 	wireAct := byte((c.Actuation & 0x3F) << 2)
-	wireRT := byte((c.RapidTrigger&0x3F)<<2) | (c.rtFlag & 0x01)
+	// wireRT=0x00 disables rapid trigger (RT=0 with sensFlag=1 is rejected by firmware).
+	var wireRT byte
+	if c.RapidTrigger > 0 {
+		wireRT = byte((c.RapidTrigger&0x3F)<<2) | (c.rtFlag & 0x01)
+	}
 	wireHap := byte((c.Haptics & 0x3F) << 2)
 	_, err = d.Call(idx, 0x01, byte(button), wireAct, wireRT, wireHap)
+	if err == ErrTimeout {
+		return nil
+	}
 	return err
 }
 
-// SetHaptics sets the click-haptic intensity (0..MaxHaptics) for a button,
-// reading first so the other fields (and the sensitivity flag) are preserved.
-func (d *Device) SetHaptics(button, value int) error {
+// ApplyAnalogConfig applies a partial HITS update for one button in a single
+// read-modify-write cycle. Pass -1 for any field to leave it unchanged.
+// This is the preferred write path when changing multiple fields at once.
+func (d *Device) ApplyAnalogConfig(button, actuation, rapidTrigger, haptics int) error {
 	cur, err := d.AnalogConfig(button)
 	if err != nil {
 		return err
 	}
-	cur.Haptics = value
+	if actuation >= 0 {
+		cur.Actuation = actuation
+	}
+	if rapidTrigger >= 0 {
+		cur.RapidTrigger = rapidTrigger
+	}
+	if haptics >= 0 {
+		cur.Haptics = haptics
+	}
 	return d.writeAnalog(button, cur)
+}
+
+// SetHaptics sets the click-haptic intensity (0..MaxHaptics) for a button.
+func (d *Device) SetHaptics(button, value int) error {
+	return d.ApplyAnalogConfig(button, -1, -1, value)
 }
 
 // SetActuation sets the actuation-point depth (1..MaxActuation) for a button.
 func (d *Device) SetActuation(button, value int) error {
-	cur, err := d.AnalogConfig(button)
-	if err != nil {
-		return err
-	}
-	cur.Actuation = value
-	return d.writeAnalog(button, cur)
+	return d.ApplyAnalogConfig(button, value, -1, -1)
 }
 
-// SetRapidTrigger sets the rapid-trigger sensitivity (1..MaxRapidTrigger).
+// SetRapidTrigger sets the rapid-trigger sensitivity (0..MaxRapidTrigger).
 func (d *Device) SetRapidTrigger(button, value int) error {
-	cur, err := d.AnalogConfig(button)
-	if err != nil {
-		return err
-	}
-	cur.RapidTrigger = value
-	return d.writeAnalog(button, cur)
+	return d.ApplyAnalogConfig(button, -1, value, -1)
 }

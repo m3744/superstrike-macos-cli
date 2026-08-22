@@ -34,10 +34,12 @@ func main() {
 	remapB3     := flag.String("remap-b3", "", "remap button 3 (Middle) — see action syntax below")
 	remapB4     := flag.String("remap-b4", "", "remap button 4 (Back)   — see action syntax below")
 	remapB5     := flag.String("remap-b5", "", "remap button 5 (Forward)— see action syntax below")
+	preset      := flag.String("preset", "", "apply a named HITS preset (superlight2)")
 	flag.Parse()
 
 	hitsWrite  := *setActL >= 0 || *setActR >= 0 || *setRTL >= 0 || *setRTR >= 0 || *setHapticsL >= 0 || *setHapticsR >= 0
 	remapAny   := *remapB1 != "" || *remapB2 != "" || *remapB3 != "" || *remapB4 != "" || *remapB5 != ""
+	presetName := strings.ToLower(strings.TrimSpace(*preset))
 
 	switch {
 	case *probe:
@@ -66,6 +68,8 @@ func main() {
 		runSetName(*setName)
 	case remapAny:
 		runRemap([5]string{*remapB1, *remapB2, *remapB3, *remapB4, *remapB5})
+	case presetName != "":
+		runPreset(presetName)
 	default:
 		flag.Usage()
 	}
@@ -259,40 +263,64 @@ func runHits() {
 		fmt.Printf("  %-14s actuation=%d  rapid-trigger=%d  haptics=%d\n",
 			name+":", cfg.Actuation, cfg.RapidTrigger, cfg.Haptics)
 	}
+	fmt.Println("  note: rapid-trigger getter returns last active sensitivity and may be stale when RT is off (set to 0).")
 }
 
-// runSetHits applies any HITS write flags that are >= 0. Each setter does a
-// read-modify-write internally so unspecified fields are preserved.
+// runSetHits applies any HITS write flags that are >= 0. Each button gets one
+// read-modify-write cycle so unspecified fields are preserved and HID++ traffic
+// is kept to a minimum (2 calls per touched button instead of 2 per field).
 // Changes apply live — no profile reload needed.
 func runSetHits(actL, actR, rtL, rtR, hapL, hapR int) {
 	d := openMouse()
 	defer d.Close()
 
-	type op struct {
-		button int
-		side   string
-		field  string
-		value  int
-		fn     func(int, int) error
+	type buttonOp struct {
+		button     int
+		side       string
+		act, rt, hap int
 	}
-	ops := []op{
-		{0, "Left",  "actuation",     actL, d.SetActuation},
-		{1, "Right", "actuation",     actR, d.SetActuation},
-		{0, "Left",  "rapid-trigger", rtL,  d.SetRapidTrigger},
-		{1, "Right", "rapid-trigger", rtR,  d.SetRapidTrigger},
-		{0, "Left",  "haptics",       hapL, d.SetHaptics},
-		{1, "Right", "haptics",       hapR, d.SetHaptics},
-	}
-	for _, o := range ops {
-		if o.value < 0 {
+	for _, b := range []buttonOp{
+		{0, "Left",  actL, rtL, hapL},
+		{1, "Right", actR, rtR, hapR},
+	} {
+		if b.act < 0 && b.rt < 0 && b.hap < 0 {
 			continue
 		}
-		if err := o.fn(o.button, o.value); err != nil {
-			fmt.Fprintf(os.Stderr, "set %s %s: %v\n", o.side, o.field, err)
+		if err := d.ApplyAnalogConfig(b.button, b.act, b.rt, b.hap); err != nil {
+			fmt.Fprintf(os.Stderr, "set %s HITS: %v\n", b.side, err)
 			os.Exit(1)
 		}
-		fmt.Printf("%s button %s set to %d\n", o.side, o.field, o.value)
+		if b.act >= 0 {
+			fmt.Printf("%s button actuation set to %d\n", b.side, b.act)
+		}
+		if b.rt >= 0 {
+			fmt.Printf("%s button rapid-trigger set to %d\n", b.side, b.rt)
+		}
+		if b.hap >= 0 {
+			fmt.Printf("%s button haptics set to %d\n", b.side, b.hap)
+		}
 	}
+}
+
+// runPreset applies a named HITS preset. Currently supported:
+//
+//	superlight2 — actuation 5, rapid-trigger off, haptics 3
+//	             (closest match to the PRO X Superlight 2 LIGHTFORCE click feel)
+func runPreset(name string) {
+	type preset struct {
+		act, rt, hap int
+		desc         string
+	}
+	presets := map[string]preset{
+		"superlight2": {5, 0, 3, "Actuation=5  Rapid-trigger=off  Haptics=3  (Superlight 2 feel)"},
+	}
+	p, ok := presets[name]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown preset %q — available: superlight2\n", name)
+		os.Exit(1)
+	}
+	fmt.Println("Applying preset:", p.desc)
+	runSetHits(p.act, p.act, p.rt, p.rt, p.hap, p.hap)
 }
 
 // runSwitchProfile switches the active onboard profile by 1-based slot number.
